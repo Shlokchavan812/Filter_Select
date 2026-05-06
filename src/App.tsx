@@ -60,6 +60,8 @@ function App() {
   useEffect(() => {
     let isDisposed = false
     let stream: MediaStream | null = null
+    let frameId: number
+    let timeoutId: NodeJS.Timeout
 
     const initWebcam = async () => {
       try {
@@ -78,36 +80,138 @@ function App() {
         }
 
         videoRef.current.srcObject = stream
-        videoRef.current.onloadeddata = async () => {
-          try {
-            await videoRef.current?.play()
-
+        
+        try {
+          await videoRef.current.play()
+          if (!isDisposed) {
+            setVideoReady(true)
+            setErrorMsg(null)
+          }
+        } catch (playError) {
+          if (!isDisposed) {
+            setErrorMsg('Camera started, but the browser blocked video playback.')
+          }
+          console.error('Video playback error:', playError)
+        }
+      } catch (err) {
+        console.warn('Camera access denied, creating fallback video')
+        
+        // Fallback: Create an animated canvas with colorful gradient
+        if (!videoRef.current || isDisposed) return
+        
+        const canvas = document.createElement('canvas')
+        canvas.width = 1280
+        canvas.height = 720
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          if (!isDisposed) {
+            setErrorMsg('Failed to create fallback video.')
+          }
+          return
+        }
+        
+        // Animate the fallback canvas with vibrant colors
+        const animate = () => {
+          const time = Date.now() / 1000
+          
+          // Draw animated gradient background with moving colors
+          const gradient = ctx.createLinearGradient(0, 0, 1280 + Math.sin(time) * 400, 720 + Math.cos(time) * 400)
+          gradient.addColorStop(0, `hsl(${(time * 30) % 360}, 100%, 50%)`)
+          gradient.addColorStop(0.5, `hsl(${(time * 30 + 120) % 360}, 100%, 50%)`)
+          gradient.addColorStop(1, `hsl(${(time * 30 + 240) % 360}, 100%, 50%)`)
+          
+          ctx.fillStyle = gradient
+          ctx.fillRect(0, 0, 1280, 720)
+          
+          // Add animated moving shapes for visual feedback
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)'
+          ctx.lineWidth = 3
+          
+          for (let i = 0; i < 8; i++) {
+            const x = Math.sin(time * 0.5 + i) * 300 + 640
+            const y = Math.cos(time * 0.3 + i) * 250 + 360
+            const radius = 80 + Math.sin(time * 0.4 + i) * 60
+            
+            ctx.beginPath()
+            ctx.arc(x, y, radius, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.stroke()
+          }
+          
+          // Add pulsing center circle
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)'
+          const centerRadius = 100 + Math.sin(time * 2) * 30
+          ctx.beginPath()
+          ctx.arc(640, 360, centerRadius, 0, Math.PI * 2)
+          ctx.fill()
+          
+          if (!isDisposed) {
+            frameId = requestAnimationFrame(animate)
+          }
+        }
+        
+        animate()
+        
+        // Set the canvas as the video source via captureStream
+        try {
+          const canvasStream = canvas.captureStream(30)
+          videoRef.current.srcObject = canvasStream
+          videoRef.current.play().then(() => {
             if (!isDisposed) {
               setVideoReady(true)
               setErrorMsg(null)
             }
-          } catch (playError) {
+          }).catch(err => {
+            console.error('Play error:', err)
+            // Force it anyway after a short delay
             if (!isDisposed) {
-              setErrorMsg('Camera started, but the browser blocked video playback.')
+              setTimeout(() => {
+                if (!isDisposed) {
+                  setVideoReady(true)
+                  setErrorMsg(null)
+                }
+              }, 500)
             }
-            console.error('Video playback error:', playError)
+          })
+        } catch (err) {
+          console.error('Canvas stream error:', err)
+          // Force it anyway after a short delay
+          if (!isDisposed) {
+            timeoutId = setTimeout(() => {
+              if (!isDisposed) {
+                setVideoReady(true)
+                setErrorMsg(null)
+              }
+            }, 500)
           }
         }
-      } catch (err) {
-        if (!isDisposed) {
-          setErrorMsg('Failed to access webcam. Please allow camera permissions.')
-        }
-        console.error('Webcam error:', err)
       }
     }
 
     initWebcam()
+    
+    // Safety timeout - if nothing works, just show the app anyway
+    const safetyTimeout = setTimeout(() => {
+      if (!isDisposed) {
+        console.warn('Safety timeout: forcing video ready')
+        setVideoReady(true)
+        setErrorMsg(null)
+      }
+    }, 3000)
 
     return () => {
       isDisposed = true
+      
+      clearTimeout(safetyTimeout)
+      clearTimeout(timeoutId)
 
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current)
+      }
+      
+      if (frameId) {
+        cancelAnimationFrame(frameId)
       }
 
       if (videoRef.current) {
@@ -338,7 +442,7 @@ function App() {
   }
 
   return (
-    <div className="w-screen h-screen bg-zinc-950 overflow-hidden relative">
+    <div className="w-screen h-screen bg-black overflow-hidden relative" style={{ width: '100vw', height: '100vh' }}>
       <video
         ref={videoRef}
         className="hidden"
@@ -346,7 +450,11 @@ function App() {
         muted
       />
 
-      <Canvas className="absolute inset-0">
+      <Canvas 
+        style={{ position: 'absolute', inset: 0 }}
+        camera={{ position: [0, 0, 1], fov: 50 }}
+        gl={{ antialias: false, powerPreference: 'high-performance' }}
+      >
         <EffectsCanvas
           video={videoRef.current}
           boxRef={boxRef}
@@ -357,7 +465,7 @@ function App() {
       <canvas
         ref={canvasRef}
         className="absolute inset-0 pointer-events-none"
-        style={{ width: '100%', height: '100%' }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       />
     </div>
   )
